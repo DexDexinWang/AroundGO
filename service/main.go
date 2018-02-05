@@ -181,24 +181,4 @@ func handlerSearch (w http.ResponseWriter, r *http.Request) {
 	w.Write(js)
 
 
-	//p := &Post{
-	//	User:"1111",
-	//	Message:"一生必去的100个地方",
-	//	Location: Location{
-	//		Lat:lat,
-	//		Lon:lon,
-	//	},
-	//}
-	////convert POST TYPE as JSON TYPE
-	//js, err:= json.Marshal(p)
-	//if err != nil {
-	//	panic(err)
-	//	return
-	//}
-	////Write header describe it as
-	//w.Header().Set("Content-Type", "application/json")
-	//w.Write(js)
-	//
-	//fmt.Fprintf(w, "Search received: %s  %s", lat, lon)
-
 }
