@@ -93,7 +93,7 @@ func handlerPost (w http.ResponseWriter, r *http.Request) {
 	id := uuid.New()
 	// Save to ES.
 	saveToES(&p, id)
-	saveToBT(&p, id)
+	//saveToBT(&p, id)
 }
 
 func saveToBT(p *Post,id string){
