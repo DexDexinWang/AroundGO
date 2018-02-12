@@ -12,6 +12,10 @@ import (
 	"strings"
 	"context"
 	"cloud.google.com/go/bigtable"
+	//for token generation.
+	"github.com/auth0/go-jwt-middleware"
+	"github.com/dgrijalva/jwt-go"
+	"github.com/gorilla/mux"
 )
 
 const (
@@ -19,7 +23,7 @@ const (
 	INDEX = "around"
 	TYPE = "post"
 	DISTANCE = "200km"
-	ES_URL = "http://35.231.109.82:9200"
+	ES_URL = "http://35.231.15.30:9200"
 	//update to BT
 	PROJECT_ID = "prime-mechanic-194222"
 	BT_INSTANCE = "around-post"
@@ -37,6 +41,8 @@ type Post struct {
 	Location Location `json:"location"`
 
 }
+
+var mySigningKey = []byte("secret")
 
 func main() {
 
@@ -73,10 +79,23 @@ func main() {
 		}
 	}
 
-
 	fmt.Println("started-service")
-	http.HandleFunc("/post", handlerPost)
-	http.HandleFunc("/search", handlerSearch)
+
+	//create mux router
+	r := mux.NewRouter()
+	var jwtMiddleware = jwtmiddleware.New(jwtmiddleware.Options{
+		ValidationKeyGetter: func(token *jwt.Token) (interface{}, error) {
+			return mySigningKey, nil
+		},
+		SigningMethod: jwt.SigningMethodHS256,
+	})
+
+	r.Handle("/post", jwtMiddleware.Handler(http.HandlerFunc(handlerPost))).Methods("POST")
+	r.Handle("/search", jwtMiddleware.Handler(http.HandlerFunc(handlerSearch))).Methods("GET")
+	r.Handle("/login", http.HandlerFunc(loginHandler)).Methods("POST")
+	r.Handle("/signup", http.HandlerFunc(signupHandler)).Methods("POST")
+
+	http.Handle("/", r)
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
@@ -91,9 +110,39 @@ func handlerPost (w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Post received: %s \n", p.Message)
 
 	id := uuid.New()
+	user := r.Context().Value("user")
+	claims := user.(*jwt.Token).Claims
+	username := claims.(jwt.MapClaims)["username"]
+	p.User = username.(string)
+
 	// Save to ES.
 	saveToES(&p, id)
 	//saveToBT(&p, id)
+}
+
+// Save a post to ElasticSearch
+func saveToES(p *Post, id string) {
+	// Create a client
+	es_client, err := elastic.NewClient(elastic.SetURL(ES_URL), elastic.SetSniff(false))
+	if err != nil {
+		panic(err)
+		return
+	}
+
+	// Save it to index
+	_, err = es_client.Index().
+		Index(INDEX).
+		Type(TYPE).
+		Id(id).
+		BodyJson(p).
+		Refresh(true).
+		Do()
+	if err != nil {
+		panic(err)
+		return
+	}
+
+	fmt.Printf("Post is saved to Index: %s\n", p.Message)
 }
 
 func saveToBT(p *Post,id string){
@@ -121,31 +170,6 @@ func saveToBT(p *Post,id string){
 	}
 	fmt.Printf("Post is saved to BigTable: %s\n", p.Message)
 
-}
-
-// Save a post to ElasticSearch
-func saveToES(p *Post, id string) {
-	// Create a client
-	es_client, err := elastic.NewClient(elastic.SetURL(ES_URL), elastic.SetSniff(false))
-	if err != nil {
-		panic(err)
-		return
-	}
-
-	// Save it to index
-	_, err = es_client.Index().
-		Index(INDEX).
-		Type(TYPE).
-		Id(id).
-		BodyJson(p).
-		Refresh(true).
-		Do()
-	if err != nil {
-		panic(err)
-		return
-	}
-
-	fmt.Printf("Post is saved to Index: %s\n", p.Message)
 }
 
 
