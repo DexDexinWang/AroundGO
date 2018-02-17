@@ -16,6 +16,9 @@ import (
 	"github.com/auth0/go-jwt-middleware"
 	"github.com/dgrijalva/jwt-go"
 	"github.com/gorilla/mux"
+	//save image
+	"cloud.google.com/go/storage"
+	"io"
 )
 
 const (
@@ -23,10 +26,12 @@ const (
 	INDEX = "around"
 	TYPE = "post"
 	DISTANCE = "200km"
-	ES_URL = "http://35.231.15.30:9200"
+	ES_URL = "http://104.196.187.179:9200"
 	//update to BT
 	PROJECT_ID = "prime-mechanic-194222"
 	BT_INSTANCE = "around-post"
+	//bucket_name
+	BUCKET_NAME = "prime-mechanic-194222-post-image"
 )
 
 
@@ -39,6 +44,7 @@ type Post struct {
 	User     string `json:"user"`
 	Message  string  `json:"message"`
 	Location Location `json:"location"`
+	Url    string `json:"url"`
 
 }
 
@@ -46,7 +52,7 @@ var mySigningKey = []byte("secret")
 
 func main() {
 
-	// Create a client
+	// Create a ES client
 	client, err := elastic.NewClient(elastic.SetURL(ES_URL), elastic.SetSniff(false))
 	if err != nil {
 		panic(err)
@@ -90,6 +96,7 @@ func main() {
 		SigningMethod: jwt.SigningMethodHS256,
 	})
 
+
 	r.Handle("/post", jwtMiddleware.Handler(http.HandlerFunc(handlerPost))).Methods("POST")
 	r.Handle("/search", jwtMiddleware.Handler(http.HandlerFunc(handlerSearch))).Methods("GET")
 	r.Handle("/login", http.HandlerFunc(loginHandler)).Methods("POST")
@@ -100,6 +107,55 @@ func main() {
 }
 
 func handlerPost (w http.ResponseWriter, r *http.Request) {
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization")
+
+	// 32 << 20 is the maxMemory param for ParseMultipartForm, equals to 32MB (1MB = 1024 * 1024 bytes = 2^20 bytes)
+	// After you call ParseMultipartForm, the file will be saved in the server memory with maxMemory size.
+	// If the file size is larger than maxMemory, the rest of the data will be saved in a system temporary file.
+	r.ParseMultipartForm(32 << 20)
+
+
+	// Parse from form data.
+	fmt.Printf("Received one post request %s\n", r.FormValue("message"))
+	lat, _ := strconv.ParseFloat(r.FormValue("lat"), 64)
+	lon, _ := strconv.ParseFloat(r.FormValue("lon"), 64)
+	p := &Post{
+		User:    "1111",
+		Message: r.FormValue("message"),
+		Location: Location{
+			Lat: lat,
+			Lon: lon,
+		},
+	}
+
+	id := uuid.New()
+
+	file, _, err := r.FormFile("image")
+	if err != nil {
+		http.Error(w, "Image is not available", http.StatusInternalServerError)
+		fmt.Printf("Image is not available %v.\n", err)
+		return
+	}
+	defer file.Close()
+
+	ctx := context.Background()
+
+	// replace it with your real bucket name.
+	_, attrs, err := saveToGCS(ctx, file, BUCKET_NAME, id)
+	if err != nil {
+		http.Error(w, "GCS is not setup", http.StatusInternalServerError)
+		fmt.Printf("GCS is not setup %v\n", err)
+		return
+	}
+
+	// Update the media link after saving to GCS.
+	p.Url = attrs.MediaLink
+
+
+	/* Decoder directly parses the json file.
 	fmt.Print("Received one post request")
 	decoder := json.NewDecoder(r.Body)
 	var p Post
@@ -114,11 +170,49 @@ func handlerPost (w http.ResponseWriter, r *http.Request) {
 	claims := user.(*jwt.Token).Claims
 	username := claims.(jwt.MapClaims)["username"]
 	p.User = username.(string)
-
+	*/
+	saveToES(p, id);
 	// Save to ES.
-	saveToES(&p, id)
+	// saveToES(&p, id)
 	//saveToBT(&p, id)
 }
+func saveToGCS(ctx context.Context, r io.Reader, bucket, name string) (*storage.ObjectHandle, *storage.ObjectAttrs, error) {
+	//create a client
+	client, err := storage.NewClient(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer client.Close()
+
+	//create a bucket handler
+	bh := client.Bucket(bucket)
+	//check if the bucket exists.
+	if _, err = bh.Attrs(ctx); err != nil {
+		return nil, nil, err
+	}
+
+	obj := bh.Object(name)
+	//create a writer
+	w := obj.NewWriter(ctx)
+	if _, err := io.Copy(w, r); err != nil {
+		return nil, nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, nil, err
+	}
+
+	//gei permissions to all users.
+	if err := obj.ACL().Set(ctx, storage.AllUsers, storage.RoleReader); err != nil {
+		return nil, nil, err
+	}
+	//attrs is a return attribute
+	attrs, err := obj.Attrs(ctx)
+	//attrs.MediaLink, target url
+	fmt.Printf("Post is saved to GCS: %s\n", attrs.MediaLink)
+	return obj, attrs, err
+}
+
+
 
 // Save a post to ElasticSearch
 func saveToES(p *Post, id string) {
